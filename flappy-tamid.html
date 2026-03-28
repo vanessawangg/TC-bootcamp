@@ -247,6 +247,92 @@
   /** Offscreen bitmap: black backdrop → transparent, full saturation (no lighten blend) */
   let playerSpriteCanvas = null;
 
+  /** Key + color fix: kill teal JPEG fringe (reads as “water filter” on skin) */
+  const PLAYER_SPRITE_KEY = 30;
+  const PLAYER_SAT_MULT = 1.12;
+  const PLAYER_CONTRAST = 1.05;
+
+  function rgbToHsl(r, g, b) {
+    r /= 255;
+    g /= 255;
+    b /= 255;
+    const max = Math.max(r, g, b);
+    const min = Math.min(r, g, b);
+    let h = 0;
+    let s = 0;
+    const l = (max + min) / 2;
+    if (max !== min) {
+      const d = max - min;
+      s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+      switch (max) {
+        case r:
+          h = ((g - b) / d + (g < b ? 6 : 0)) / 6;
+          break;
+        case g:
+          h = ((b - r) / d + 2) / 6;
+          break;
+        default:
+          h = ((r - g) / d + 4) / 6;
+      }
+    }
+    return [h, s, l];
+  }
+
+  function hslToRgb(h, s, l) {
+    if (s === 0) {
+      const v = Math.round(l * 255);
+      return [v, v, v];
+    }
+    const hue2rgb = (p, q, t) => {
+      if (t < 0) t += 1;
+      if (t > 1) t -= 1;
+      if (t < 1 / 6) return p + (q - p) * 6 * t;
+      if (t < 1 / 2) return q;
+      if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+      return p;
+    };
+    const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+    const p = 2 * l - q;
+    const R = Math.round(hue2rgb(p, q, h + 1 / 3) * 255);
+    const G = Math.round(hue2rgb(p, q, h) * 255);
+    const B = Math.round(hue2rgb(p, q, h - 1 / 3) * 255);
+    return [R, G, B];
+  }
+
+  /** Reduce blue/cyan spill on edges and shadows (common on black-backdrop JPEGs). */
+  function neutralizeCoolCast(r, g, b) {
+    let R = r;
+    let G = g;
+    let B = b;
+    const exB = B - Math.max(R, G);
+    if (exB > 5) {
+      const f = Math.min(1, exB / 72);
+      B = Math.max(0, Math.round(B - f * 34));
+      G = Math.max(0, Math.round(G - f * 14));
+      R = Math.min(255, Math.round(R + f * 16));
+    }
+    const cool = G + B - 2 * R;
+    if (cool > 28 && R < 130) {
+      const f = Math.min(1, cool / 160);
+      B = Math.max(0, Math.round(B - f * 26));
+      G = Math.max(0, Math.round(G - f * 16));
+      R = Math.min(255, Math.round(R + f * 12));
+    }
+    return [R, G, B];
+  }
+
+  function punchUpSkinPixels(r, g, b) {
+    const [r0, g0, b0] = neutralizeCoolCast(r, g, b);
+    const [h, s, l] = rgbToHsl(r0, g0, b0);
+    const s2 = Math.min(1, s * PLAYER_SAT_MULT);
+    let [R, G, B] = hslToRgb(h, s2, l);
+    const c = PLAYER_CONTRAST;
+    R = Math.round(Math.min(255, Math.max(0, (R - 128) * c + 128)));
+    G = Math.round(Math.min(255, Math.max(0, (G - 128) * c + 128)));
+    B = Math.round(Math.min(255, Math.max(0, (B - 128) * c + 128)));
+    return neutralizeCoolCast(R, G, B);
+  }
+
   function rebuildPlayerSprite() {
     const img = playerImg;
     if (!img.naturalWidth || !img.naturalHeight) return;
@@ -265,12 +351,18 @@
       return;
     }
     const d = data.data;
-    const key = 30;
     for (let i = 0; i < d.length; i += 4) {
       const r = d[i];
       const g = d[i + 1];
       const b = d[i + 2];
-      if (r <= key && g <= key && b <= key) d[i + 3] = 0;
+      if (r <= PLAYER_SPRITE_KEY && g <= PLAYER_SPRITE_KEY && b <= PLAYER_SPRITE_KEY) {
+        d[i + 3] = 0;
+        continue;
+      }
+      const [R, G, B] = punchUpSkinPixels(r, g, b);
+      d[i] = R;
+      d[i + 1] = G;
+      d[i + 2] = B;
     }
     cctx.putImageData(data, 0, 0);
     playerSpriteCanvas = c;
@@ -486,6 +578,12 @@
   }
 
   function drawBubbles(dt, t) {
+    const hideNearKyle =
+      screen === Screen.PLAY || screen === Screen.GAMEOVER;
+    const kx = W * 0.22;
+    const ky = playerY + Math.sin(t * 0.004) * 3;
+    const avoid2 = 68 * 68;
+
     ctx.save();
     for (const b of bubbles) {
       b.y -= b.speed * dt;
@@ -494,6 +592,11 @@
       if (b.y < -20) {
         b.y = H + 10;
         b.x = Math.random() * W;
+      }
+      if (hideNearKyle) {
+        const dx = b.x - kx;
+        const dy = b.y - ky;
+        if (dx * dx + dy * dy < avoid2) continue;
       }
       ctx.beginPath();
       ctx.fillStyle = 'rgba(255,255,255,0.35)';
@@ -598,7 +701,7 @@
   }
 
   /**
-   * Kyle as the bird: keyed sprite at full color, tilt + bob, earbud bubbles.
+   * Kyle as the bird: keyed sprite, teal fringe removed in rebuild; tilt + bob.
    */
   function drawPlayer(t) {
     const px = W * 0.22;
@@ -631,11 +734,14 @@
         sy = (ih - sh) / 2;
       }
       if (keyed) {
+        // Color already punched in rebuildPlayerSprite (no extra canvas filter)
         ctx.drawImage(keyed, sx, sy, sw, sh, -R, -R, side, side);
       } else {
+        ctx.filter = 'saturate(1.32) contrast(1.06) brightness(1.03)';
         ctx.globalCompositeOperation = 'lighten';
         ctx.drawImage(playerImg, sx, sy, sw, sh, -R, -R, side, side);
         ctx.globalCompositeOperation = 'source-over';
+        ctx.filter = 'none';
       }
     } else {
       ctx.fillStyle = '#37474f';
@@ -644,19 +750,6 @@
       ctx.font = '11px Segoe UI, sans-serif';
       ctx.textAlign = 'center';
       ctx.fillText('Loading…', 0, 4);
-    }
-
-    // Micro-bubbles escaping near the earbud (right side in photo = +x in canvas space)
-    const bt = t * 0.0025;
-    for (let i = 0; i < 4; i++) {
-      const rise = ((bt * 40 + i * 14) % 28);
-      const bx = R * 0.45 + Math.sin(bt + i * 1.2) * 5;
-      const by = -rise;
-      const br = 1.2 + (i % 2) * 0.6;
-      ctx.fillStyle = 'rgba(255, 255, 255, ' + (0.25 + (i % 3) * 0.12) + ')';
-      ctx.beginPath();
-      ctx.arc(bx, by, br, 0, Math.PI * 2);
-      ctx.fill();
     }
 
     ctx.restore();
