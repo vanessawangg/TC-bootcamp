@@ -67,6 +67,25 @@
   /** Portrait sprite (same folder as this HTML file) */
   const PLAYER_SPRITE_PATH = 'kyle-flappy-sprite.png';
 
+  /** Photos in the gap — hug top or bottom so the middle stays fly-line clear */
+  const GAP_DECAL_PATHS = [
+    'assets/gap-decals/1.png',
+    'assets/gap-decals/2.png',
+    'assets/gap-decals/3.png',
+    'assets/gap-decals/4.png',
+    'assets/gap-decals/5.png',
+    'assets/gap-decals/6.png',
+    'assets/gap-decals/7.png',
+    'assets/gap-decals/8.png',
+    'assets/gap-decals/9.png',
+    'assets/gap-decals/10.png',
+  ];
+  const gapDecalImages = GAP_DECAL_PATHS.map((src) => {
+    const im = new Image();
+    im.src = src;
+    return im;
+  });
+
   // ---------------------------------------------------------------------------
   // DOM & canvas sizing
   // ---------------------------------------------------------------------------
@@ -230,7 +249,7 @@
   let playerVy = 0;
   let playerTilt = 0;
 
-  /** @type {{ x: number, gapY: number, gapSize: number, type: 'dsp'|'akpsi', passed: boolean }[]} */
+  /** @type {{ x: number, gapY: number, gapSize: number, type: 'dsp'|'akpsi', passed: boolean, decal?: { imgIndex: number, side: 'top'|'bottom' } | null }[]} */
   let pipes = [];
   let nextPipeAt = 0;
 
@@ -343,12 +362,20 @@
     const margin = 100;
     const gapY = margin + gapSize / 2 + Math.random() * (H - margin * 2 - gapSize);
     const type = Math.random() > 0.5 ? 'dsp' : 'akpsi';
+    let decal = null;
+    if (Math.random() < 0.62 && gapDecalImages.length) {
+      decal = {
+        imgIndex: (Math.random() * gapDecalImages.length) | 0,
+        side: Math.random() > 0.5 ? 'top' : 'bottom',
+      };
+    }
     pipes.push({
       x: W + 40,
       gapY,
       gapSize,
       type,
       passed: false,
+      decal,
     });
     const baseInterval = 1650 - (d.pipeSpeed * 120);
     nextPipeAt = now + Math.max(1100, baseInterval);
@@ -419,6 +446,7 @@
       drawCeiling();
       drawFloor();
       drawPipes();
+      drawPipeGapDecals();
       drawPlayer(now);
     }
   }
@@ -575,9 +603,20 @@
 
     ctx.fillStyle = '#fff';
     ctx.font = 'bold 13px Segoe UI, sans-serif';
+    const capCenterY = top === 0 ? top + height - capH / 2 : top + capH / 2;
+    const capTotalW = w + capPad * 2;
+    const labelPad = 6;
+    const targetLabelW = Math.max(1, capTotalW - labelPad * 2);
+    const nw = ctx.measureText(label).width;
+    const scaleX = targetLabelW / nw;
+
+    ctx.save();
+    ctx.translate(pipe.x, capCenterY);
+    ctx.scale(scaleX, 1);
     ctx.textAlign = 'center';
-    const capY = top === 0 ? top + height - capH / 2 + 4 : top + capH / 2 + 4;
-    ctx.fillText(label, pipe.x, capY);
+    ctx.textBaseline = 'middle';
+    ctx.fillText(label, 0, 0);
+    ctx.restore();
 
     // banner stripes
     ctx.strokeStyle = 'rgba(255,255,255,0.15)';
@@ -598,6 +637,47 @@
       const botY = pipe.gapY + pipe.gapSize / 2;
       drawPillar(pipe, 0, topH);
       drawPillar(pipe, botY, H - botY);
+    }
+  }
+
+  function drawPipeGapDecals() {
+    const maxW = 200;
+    for (const pipe of pipes) {
+      const d = pipe.decal;
+      if (!d) continue;
+      const img = gapDecalImages[d.imgIndex];
+      if (!img || !img.complete || !img.naturalWidth) continue;
+
+      const gapTop = pipe.gapY - pipe.gapSize / 2;
+      const gapBot = pipe.gapY + pipe.gapSize / 2;
+      const lanePad = 14;
+      const lipBleed = 40;
+      const halfChamber = pipe.gapSize / 2 - lanePad;
+      const maxH = Math.min(315, Math.max(72, halfChamber + lipBleed + 24));
+      const ar = img.naturalWidth / img.naturalHeight;
+      let dh = maxH;
+      let dw = dh * ar;
+      if (dw > maxW) {
+        dw = maxW;
+        dh = dw / ar;
+      }
+
+      let cy;
+      if (d.side === 'top') {
+        cy = gapTop + dh / 2 - lipBleed * 0.35;
+        if (cy + dh / 2 > pipe.gapY - lanePad) cy = pipe.gapY - lanePad - dh / 2;
+      } else {
+        cy = gapBot - dh / 2 + lipBleed * 0.35;
+        if (cy - dh / 2 < pipe.gapY + lanePad) cy = pipe.gapY + lanePad + dh / 2;
+      }
+      cy = Math.max(gapTop + dh / 2 + 1, Math.min(gapBot - dh / 2 - 1, cy));
+
+      const cx = pipe.x;
+      ctx.save();
+      ctx.shadowColor = 'rgba(0,0,0,0.45)';
+      ctx.shadowBlur = 12;
+      ctx.drawImage(img, cx - dw / 2, cy - dh / 2, dw, dh);
+      ctx.restore();
     }
   }
 
