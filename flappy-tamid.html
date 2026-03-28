@@ -44,9 +44,16 @@
       color: #b2ebf2;
       text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
     }
+    .name-inline {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+    }
     .name-row input {
-      width: min(240px, 85vw);
-      padding: 10px 14px;
+      width: min(168px, 52vw);
+      padding: 10px 12px;
       font-size: 16px;
       border-radius: 10px;
       border: 2px solid #26a69a;
@@ -57,6 +64,32 @@
       outline: none;
       border-color: #80cbc4;
       box-shadow: 0 0 0 3px rgba(38, 166, 154, 0.35);
+    }
+    .name-save-btn {
+      padding: 10px 16px;
+      font-size: 15px;
+      font-weight: 600;
+      font-family: inherit;
+      border: none;
+      border-radius: 10px;
+      background: #00897b;
+      color: #fff;
+      cursor: pointer;
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25);
+    }
+    .name-save-btn:active {
+      transform: scale(0.98);
+    }
+    .name-saved-hint {
+      font-size: 11px;
+      line-height: 1.35;
+      color: #a5d6a7;
+      text-align: center;
+      max-width: 280px;
+      text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7);
+    }
+    .name-saved-hint[hidden] {
+      display: none !important;
     }
     /*
       Canvas comes first in DOM; .name-row is after so it stacks above and
@@ -80,7 +113,13 @@
     <canvas id="game" aria-label="Flappy TAMID game canvas"></canvas>
     <div class="name-row" aria-hidden="true">
       <label for="playerName">Your name</label>
-      <input type="text" id="playerName" maxlength="18" placeholder="Tap here — type your name" autocomplete="nickname" spellcheck="false" />
+      <div class="name-inline">
+        <input type="text" id="playerName" maxlength="18" placeholder="Name" autocomplete="nickname" spellcheck="false" />
+        <button type="button" id="nameSaveBtn" class="name-save-btn">Save</button>
+      </div>
+      <p id="nameSavedHint" class="name-saved-hint" hidden>
+        Saved. Play a round — your name and score appear here after each game.
+      </p>
     </div>
   </div>
 
@@ -291,7 +330,7 @@
     const row = document.querySelector('#wrap .name-row');
     if (!row || !canvas) return;
     const r = canvas.getBoundingClientRect();
-    const yBelowTitle = 156;
+    const yBelowTitle = 128;
     row.style.left = r.left + r.width / 2 + 'px';
     row.style.top = r.top + (yBelowTitle / H) * r.height + 'px';
     row.style.transform = 'translateX(-50%)';
@@ -1102,9 +1141,9 @@
 
     ctx.fillStyle = 'rgba(255,255,255,0.85)';
     ctx.font = '16px Segoe UI, sans-serif';
-    ctx.fillText('Choose difficulty', W / 2, 188);
+    ctx.fillText('Choose difficulty', W / 2, 262);
 
-    const btnY = 232;
+    const btnY = 296;
     const btnH = 44;
     const btnW = 200;
     const gap = 12;
@@ -1149,7 +1188,10 @@
     ctx.font = '10px Segoe UI, sans-serif';
     ctx.fillStyle = 'rgba(200, 230, 255, 0.85)';
     if (!leaderboardRows.length) {
-      ctx.fillText('No scores yet — be the first.', 24, lbY0 + 16);
+      ctx.fillText('No scores yet — play one to get on the board!', 24, lbY0 + 14);
+      ctx.fillStyle = 'rgba(180, 210, 230, 0.75)';
+      ctx.font = '9px Segoe UI, sans-serif';
+      ctx.fillText('(Leaderboard lists runs after each game, not the name box alone.)', 24, lbY0 + 28);
     } else {
       leaderboardRows.slice(0, 6).forEach(function (row, i) {
         const line =
@@ -1271,7 +1313,7 @@
   }
 
   function hitTestStartButtons(mx, my) {
-    const btnY = 232;
+    const btnY = 296;
     const btnH = 44;
     const btnW = 200;
     const gap = 12;
@@ -1425,12 +1467,44 @@
     requestAnimationFrame(frame);
   }
 
+  let nameSavedHintTimer = null;
+  function flashNameSavedHint() {
+    const el = document.getElementById('nameSavedHint');
+    if (!el) return;
+    el.hidden = false;
+    if (nameSavedHintTimer) clearTimeout(nameSavedHintTimer);
+    nameSavedHintTimer = setTimeout(function () {
+      el.hidden = true;
+    }, 5500);
+  }
+
   nameInputEl = document.getElementById('playerName');
+  const nameSaveBtn = document.getElementById('nameSaveBtn');
   if (nameInputEl) {
     const saved = localStorage.getItem(PLAYER_NAME_KEY);
     if (saved) nameInputEl.value = saved;
     nameInputEl.addEventListener('blur', persistPlayerName);
     nameInputEl.addEventListener('change', persistPlayerName);
+    nameInputEl.addEventListener('keydown', function (ev) {
+      if (ev.key === 'Enter') {
+        ev.preventDefault();
+        if (!nameInputEl.value.trim()) return;
+        persistPlayerName();
+        flashNameSavedHint();
+        nameInputEl.blur();
+      }
+    });
+  }
+  if (nameSaveBtn) {
+    nameSaveBtn.addEventListener('click', function () {
+      if (!nameInputEl || !nameInputEl.value.trim()) {
+        nameInputEl && nameInputEl.focus();
+        return;
+      }
+      persistPlayerName();
+      flashNameSavedHint();
+      nameInputEl.blur();
+    });
   }
 
   resize();
