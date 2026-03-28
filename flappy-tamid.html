@@ -64,6 +64,8 @@
   ];
 
   const STORAGE_KEY = 'flappy_tamid_high_score';
+  /** Portrait sprite (same folder as this HTML file) */
+  const PLAYER_SPRITE_PATH = 'kyle-flappy-sprite.png';
 
   // ---------------------------------------------------------------------------
   // DOM & canvas sizing
@@ -240,8 +242,43 @@
   let gameOverRoast = '';
   let transitionAlpha = 0;
   let lastRoastAtScore = 0;
-  /** 'tamid' | 'suit' — randomized each run for variety */
-  let playerOutfit = 'tamid';
+
+  const playerImg = new Image();
+  /** Offscreen bitmap: black backdrop → transparent, full saturation (no lighten blend) */
+  let playerSpriteCanvas = null;
+
+  function rebuildPlayerSprite() {
+    const img = playerImg;
+    if (!img.naturalWidth || !img.naturalHeight) return;
+    const iw = img.naturalWidth;
+    const ih = img.naturalHeight;
+    const c = document.createElement('canvas');
+    c.width = iw;
+    c.height = ih;
+    const cctx = c.getContext('2d');
+    cctx.drawImage(img, 0, 0);
+    let data;
+    try {
+      data = cctx.getImageData(0, 0, iw, ih);
+    } catch (err) {
+      playerSpriteCanvas = null;
+      return;
+    }
+    const d = data.data;
+    const key = 30;
+    for (let i = 0; i < d.length; i += 4) {
+      const r = d[i];
+      const g = d[i + 1];
+      const b = d[i + 2];
+      if (r <= key && g <= key && b <= key) d[i + 3] = 0;
+    }
+    cctx.putImageData(data, 0, 0);
+    playerSpriteCanvas = c;
+  }
+
+  playerImg.onload = rebuildPlayerSprite;
+  playerImg.src = PLAYER_SPRITE_PATH;
+  if (playerImg.complete) rebuildPlayerSprite();
 
   // Input lock during game over until user acts on overlay
   let inputLocked = false;
@@ -297,7 +334,6 @@
     roastUntil = 0;
     lastRoastAtScore = 0;
     inputLocked = false;
-    playerOutfit = Math.random() < 0.5 ? 'tamid' : 'suit';
     initDecor();
   }
 
@@ -318,11 +354,13 @@
     nextPipeAt = now + Math.max(1100, baseInterval);
   }
 
-  /** Player hitbox circle */
+  /** Invisible circular hitbox (sprite is drawn uncropped; size matches draw width) */
+  const PLAYER_RADIUS = 28;
+
   function getPlayerCircle() {
     const px = W * 0.22;
     const py = playerY;
-    return { x: px, y: py, r: 22 };
+    return { x: px, y: py, r: PLAYER_RADIUS };
   }
 
   function circleRectOverlap(cx, cy, r, rx, ry, rw, rh) {
@@ -559,87 +597,68 @@
     }
   }
 
+  /**
+   * Kyle as the bird: keyed sprite at full color, tilt + bob, earbud bubbles.
+   */
   function drawPlayer(t) {
     const px = W * 0.22;
     const py = playerY;
     const bob = Math.sin(t * 0.004) * 3;
+    const R = PLAYER_RADIUS;
 
     ctx.save();
     ctx.translate(px, py + bob);
     ctx.rotate(playerTilt);
 
-    if (playerOutfit === 'suit') {
-      // Business suit + tie (underwater networking energy)
-      ctx.fillStyle = '#37474f';
-      ctx.strokeStyle = '#263238';
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.ellipse(0, 0, 24, 20, 0, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.stroke();
-      ctx.fillStyle = '#eceff1';
-      ctx.beginPath();
-      ctx.moveTo(-7, -11);
-      ctx.lineTo(0, -4);
-      ctx.lineTo(7, -11);
-      ctx.lineTo(0, -13);
-      ctx.closePath();
-      ctx.fill();
-      ctx.fillStyle = '#b71c1c';
-      ctx.fillRect(-3, -4, 6, 22);
-      ctx.strokeStyle = '#7f0000';
-      ctx.lineWidth = 1;
-      ctx.strokeRect(-3, -4, 6, 22);
+    const keyed = playerSpriteCanvas;
+    const iw = keyed ? keyed.width : playerImg.naturalWidth;
+    const ih = keyed ? keyed.height : playerImg.naturalHeight;
+    if (playerImg.complete && iw > 0 && ih > 0) {
+      const side = 2 * R;
+      let sx;
+      let sy;
+      let sw;
+      let sh;
+      if (iw >= ih) {
+        sh = ih;
+        sw = ih;
+        sx = (iw - sw) / 2;
+        sy = 0;
+      } else {
+        sw = iw;
+        sh = iw;
+        sx = 0;
+        sy = (ih - sh) / 2;
+      }
+      if (keyed) {
+        ctx.drawImage(keyed, sx, sy, sw, sh, -R, -R, side, side);
+      } else {
+        ctx.globalCompositeOperation = 'lighten';
+        ctx.drawImage(playerImg, sx, sy, sw, sh, -R, -R, side, side);
+        ctx.globalCompositeOperation = 'source-over';
+      }
     } else {
-      // TAMID-style shirt
-      ctx.fillStyle = '#1565c0';
-      ctx.strokeStyle = '#0d47a1';
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.ellipse(0, 0, 24, 20, 0, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.stroke();
-      ctx.fillStyle = '#e3f2fd';
-      ctx.beginPath();
-      ctx.moveTo(-8, -12);
-      ctx.lineTo(0, -6);
-      ctx.lineTo(8, -12);
-      ctx.lineTo(0, -14);
-      ctx.closePath();
-      ctx.fill();
-      ctx.fillStyle = '#ffca28';
-      ctx.font = 'bold 8px Segoe UI, sans-serif';
+      ctx.fillStyle = '#37474f';
+      ctx.fillRect(-R, -R, 2 * R, 2 * R);
+      ctx.fillStyle = 'rgba(255,255,255,0.5)';
+      ctx.font = '11px Segoe UI, sans-serif';
       ctx.textAlign = 'center';
-      ctx.fillText('T', 0, 6);
+      ctx.fillText('Loading…', 0, 4);
     }
 
-    // eyes
-    ctx.fillStyle = '#fff';
-    ctx.beginPath();
-    ctx.arc(-8, -2, 6, 0, Math.PI * 2);
-    ctx.arc(8, -2, 6, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = '#222';
-    ctx.beginPath();
-    ctx.arc(-7, -2, 3, 0, Math.PI * 2);
-    ctx.arc(9, -2, 3, 0, Math.PI * 2);
-    ctx.fill();
+    // Micro-bubbles escaping near the earbud (right side in photo = +x in canvas space)
+    const bt = t * 0.0025;
+    for (let i = 0; i < 4; i++) {
+      const rise = ((bt * 40 + i * 14) % 28);
+      const bx = R * 0.45 + Math.sin(bt + i * 1.2) * 5;
+      const by = -rise;
+      const br = 1.2 + (i % 2) * 0.6;
+      ctx.fillStyle = 'rgba(255, 255, 255, ' + (0.25 + (i % 3) * 0.12) + ')';
+      ctx.beginPath();
+      ctx.arc(bx, by, br, 0, Math.PI * 2);
+      ctx.fill();
+    }
 
-    // name tag area
-    ctx.restore();
-
-    ctx.save();
-    ctx.translate(px, py + bob);
-    ctx.rotate(playerTilt);
-    ctx.fillStyle = 'rgba(255,255,255,0.95)';
-    ctx.strokeStyle = '#333';
-    ctx.lineWidth = 1;
-    ctx.font = 'bold 7px Segoe UI, sans-serif';
-    ctx.fillRect(-18, 14, 36, 12);
-    ctx.strokeRect(-18, 14, 36, 12);
-    ctx.fillStyle = '#111';
-    ctx.textAlign = 'center';
-    ctx.fillText('Kyle Shibata', 0, 23);
     ctx.restore();
   }
 
