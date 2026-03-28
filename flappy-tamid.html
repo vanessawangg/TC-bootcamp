@@ -472,6 +472,8 @@
   const playerImg = new Image();
   /** Offscreen bitmap: black backdrop → transparent, full saturation (no lighten blend) */
   let playerSpriteCanvas = null;
+  /** Tiny bitmap so every pipe gap can always call drawImage, even before photos load */
+  let pipeFallbackDecal = null;
 
   /** Key + color fix: kill teal JPEG fringe (reads as “water filter” on skin) */
   const PLAYER_SPRITE_KEY = 30;
@@ -661,13 +663,12 @@
     const margin = 100;
     const gapY = margin + gapSize / 2 + Math.random() * (H - margin * 2 - gapSize);
     const type = Math.random() > 0.5 ? 'dsp' : 'akpsi';
-    let decal = null;
-    if (Math.random() < 0.62 && gapDecalImages.length) {
-      decal = {
-        imgIndex: (Math.random() * gapDecalImages.length) | 0,
-        side: Math.random() > 0.5 ? 'top' : 'bottom',
-      };
-    }
+    const decal = {
+      imgIndex: gapDecalImages.length
+        ? (Math.random() * gapDecalImages.length) | 0
+        : 0,
+      side: Math.random() > 0.5 ? 'top' : 'bottom',
+    };
     pipes.push({
       x: W + 40,
       gapY,
@@ -952,14 +953,52 @@
     }
   }
 
+  function ensurePipeFallbackDecal() {
+    if (pipeFallbackDecal) return pipeFallbackDecal;
+    const sz = 96;
+    const c = document.createElement('canvas');
+    c.width = sz;
+    c.height = sz;
+    const g = c.getContext('2d');
+    const grd = g.createRadialGradient(sz * 0.35, sz * 0.35, 4, sz / 2, sz / 2, sz * 0.55);
+    grd.addColorStop(0, '#b3e5fc');
+    grd.addColorStop(0.55, '#0277bd');
+    grd.addColorStop(1, '#01579b');
+    g.fillStyle = grd;
+    g.beginPath();
+    g.arc(sz / 2, sz / 2, sz * 0.46, 0, Math.PI * 2);
+    g.fill();
+    g.strokeStyle = 'rgba(255,255,255,0.55)';
+    g.lineWidth = 3;
+    g.stroke();
+    pipeFallbackDecal = c;
+    return pipeFallbackDecal;
+  }
+
+  /** Prefer gap PNGs if loaded; else keyed portrait; else guaranteed fallback — never null. */
+  function getImageForPipeDecal(pipe) {
+    const d = pipe.decal;
+    if (d != null && gapDecalImages.length) {
+      const im = gapDecalImages[d.imgIndex % gapDecalImages.length];
+      if (im && im.complete && im.naturalWidth) return im;
+    }
+    if (playerSpriteCanvas) return playerSpriteCanvas;
+    if (playerImg && playerImg.complete && playerImg.naturalWidth) return playerImg;
+    return ensurePipeFallbackDecal();
+  }
+
   function drawPipeGapDecals() {
     const maxW = 200;
     for (const pipe of pipes) {
-      const d = pipe.decal;
-      if (!d) continue;
-      const img = gapDecalImages[d.imgIndex];
-      if (!img || !img.complete || !img.naturalWidth) continue;
+      if (!pipe.decal) {
+        pipe.decal = {
+          imgIndex: 0,
+          side: Math.random() > 0.5 ? 'top' : 'bottom',
+        };
+      }
+      const img = getImageForPipeDecal(pipe);
 
+      const d = pipe.decal;
       const gapTop = pipe.gapY - pipe.gapSize / 2;
       const gapBot = pipe.gapY + pipe.gapSize / 2;
       const lanePad = 14;
