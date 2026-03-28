@@ -1,0 +1,981 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Flappy TAMID</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #0a1628;
+      font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+      touch-action: manipulation;
+      -webkit-tap-highlight-color: transparent;
+    }
+    #wrap {
+      width: 100%;
+      height: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    canvas {
+      display: block;
+      max-width: 100%;
+      max-height: 100%;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <div id="wrap">
+    <canvas id="game" aria-label="Flappy TAMID game canvas"></canvas>
+  </div>
+
+  <script>
+(function () {
+  'use strict';
+
+  // ---------------------------------------------------------------------------
+  // Constants & difficulty presets
+  // ---------------------------------------------------------------------------
+  const DIFFICULTY = {
+    easy:   { id: 'easy',   label: 'Easy',   pipeSpeed: 2.2, gapMin: 168, gapMax: 210 },
+    medium: { id: 'medium', label: 'Medium', pipeSpeed: 3.0, gapMin: 138, gapMax: 175 },
+    hard:   { id: 'hard',   label: 'Hard',   pipeSpeed: 3.8, gapMin: 108, gapMax: 145 },
+  };
+
+  const ROAST_MESSAGES = [
+    'DSP wants your resume!',
+    'AKPsi is networking again...',
+    'Another coffee chat? Bold.',
+    'LinkedIn connection request incoming.',
+    'They said "synergy" three times this week.',
+    'Case competition flashbacks.',
+    'The group chat is typing...',
+    'Someone brought cookies to the meeting.',
+    'Elevator pitch practice in the hallway.',
+    'Your competition just updated their headshot.',
+    'Networking event or speed dating? Yes.',
+    'Their deck has 47 slides. Yours has taste.',
+  ];
+
+  const STORAGE_KEY = 'flappy_tamid_high_score';
+
+  // ---------------------------------------------------------------------------
+  // DOM & canvas sizing
+  // ---------------------------------------------------------------------------
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+
+  // roundRect support for older browsers (single-file, no build step)
+  if (!CanvasRenderingContext2D.prototype.roundRect) {
+    CanvasRenderingContext2D.prototype.roundRect = function (x, y, w, h, r) {
+      const rr = Math.min(r, w / 2, h / 2);
+      this.beginPath();
+      this.moveTo(x + rr, y);
+      this.arcTo(x + w, y, x + w, y + h, rr);
+      this.arcTo(x + w, y + h, x, y + h, rr);
+      this.arcTo(x, y + h, x, y, rr);
+      this.arcTo(x, y, x + w, y, rr);
+      this.closePath();
+      return this;
+    };
+  }
+
+  let dpr = Math.min(window.devicePixelRatio || 1, 2);
+  let W = 480;
+  let H = 800;
+
+  function resize() {
+    const maxW = window.innerWidth;
+    const maxH = window.innerHeight;
+    const aspect = W / H;
+    let cw = maxW;
+    let ch = cw / aspect;
+    if (ch > maxH) {
+      ch = maxH;
+      cw = ch * aspect;
+    }
+    canvas.style.width = cw + 'px';
+    canvas.style.height = ch + 'px';
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.width = Math.floor(W * dpr);
+    canvas.height = Math.floor(H * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Web Audio API — procedural sounds only
+  // ---------------------------------------------------------------------------
+  class GameAudio {
+    constructor() {
+      this.ctx = null;
+    }
+
+    ensure() {
+      if (this.ctx) return this.ctx;
+      const AudioContext = window.AudioContext || window.webkitAudioContext;
+      if (!AudioContext) return null;
+      this.ctx = new AudioContext();
+      return this.ctx;
+    }
+
+    resume() {
+      const c = this.ensure();
+      if (c && c.state === 'suspended') c.resume();
+    }
+
+    /** Short bloop / bubble for flap */
+    flap() {
+      const ac = this.ensure();
+      if (!ac) return;
+      const t = ac.currentTime;
+      const osc = ac.createOscillator();
+      const gain = ac.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(380, t);
+      osc.frequency.exponentialRampToValueAtTime(520, t + 0.04);
+      gain.gain.setValueAtTime(0.12, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.08);
+      osc.connect(gain);
+      gain.connect(ac.destination);
+      osc.start(t);
+      osc.stop(t + 0.09);
+      // subtle noise burst for "bubble"
+      const bufferSize = ac.sampleRate * 0.05;
+      const noiseBuffer = ac.createBuffer(1, bufferSize, ac.sampleRate);
+      const data = noiseBuffer.getChannelData(0);
+      for (let i = 0; i < data.length; i++) data[i] = (Math.random() * 2 - 1) * 0.15;
+      const noise = ac.createBufferSource();
+      noise.buffer = noiseBuffer;
+      const nf = ac.createBiquadFilter();
+      nf.type = 'highpass';
+      nf.frequency.value = 800;
+      const ng = ac.createGain();
+      ng.gain.setValueAtTime(0.06, t);
+      ng.gain.exponentialRampToValueAtTime(0.001, t + 0.05);
+      noise.connect(nf);
+      nf.connect(ng);
+      ng.connect(ac.destination);
+      noise.start(t);
+      noise.stop(t + 0.055);
+    }
+
+    /** Ding for score */
+    score() {
+      const ac = this.ensure();
+      if (!ac) return;
+      const t = ac.currentTime;
+      const osc = ac.createOscillator();
+      const gain = ac.createGain();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(880, t);
+      osc.frequency.setValueAtTime(1320, t + 0.05);
+      gain.gain.setValueAtTime(0.08, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.2);
+      osc.connect(gain);
+      gain.connect(ac.destination);
+      osc.start(t);
+      osc.stop(t + 0.22);
+    }
+
+    /** Wah-wah / thud for game over */
+    gameOver() {
+      const ac = this.ensure();
+      if (!ac) return;
+      const t = ac.currentTime;
+      const osc = ac.createOscillator();
+      const gain = ac.createGain();
+      const filter = ac.createBiquadFilter();
+      filter.type = 'lowpass';
+      filter.Q.value = 1;
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(180, t);
+      osc.frequency.exponentialRampToValueAtTime(45, t + 0.35);
+      filter.frequency.setValueAtTime(800, t);
+      filter.frequency.exponentialRampToValueAtTime(120, t + 0.35);
+      gain.gain.setValueAtTime(0.1, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.45);
+      osc.connect(filter);
+      filter.connect(gain);
+      gain.connect(ac.destination);
+      osc.start(t);
+      osc.stop(t + 0.48);
+    }
+  }
+
+  const audio = new GameAudio();
+
+  // ---------------------------------------------------------------------------
+  // Game state machine
+  // ---------------------------------------------------------------------------
+  const Screen = { START: 'start', PLAY: 'play', GAMEOVER: 'gameover' };
+
+  let screen = Screen.START;
+  let selectedDifficulty = DIFFICULTY.medium;
+  let score = 0;
+  let highScore = parseInt(localStorage.getItem(STORAGE_KEY) || '0', 10) || 0;
+  if (highScore < 0) highScore = 0;
+
+  // Physics (scaled for canvas coords)
+  const GRAVITY = 1350;
+  const FLAP_IMPULSE = -380;
+  let playerY = H * 0.45;
+  let playerVy = 0;
+  let playerTilt = 0;
+
+  /** @type {{ x: number, gapY: number, gapSize: number, type: 'dsp'|'akpsi', passed: boolean }[]} */
+  let pipes = [];
+  let nextPipeAt = 0;
+
+  let bubbles = [];
+  let seaweed = [];
+  let fish = [];
+  let roastMessage = null;
+  let roastUntil = 0;
+  let gameOverRoast = '';
+  let transitionAlpha = 0;
+  let lastRoastAtScore = 0;
+  /** 'tamid' | 'suit' — randomized each run for variety */
+  let playerOutfit = 'tamid';
+
+  // Input lock during game over until user acts on overlay
+  let inputLocked = false;
+
+  function rand(min, max) {
+    return min + Math.random() * (max - min);
+  }
+
+  function pickRoast() {
+    return ROAST_MESSAGES[(Math.random() * ROAST_MESSAGES.length) | 0];
+  }
+
+  function initDecor() {
+    bubbles.length = 0;
+    for (let i = 0; i < 45; i++) {
+      bubbles.push({
+        x: Math.random() * W,
+        y: Math.random() * H,
+        r: 2 + Math.random() * 6,
+        speed: 20 + Math.random() * 50,
+        wobble: Math.random() * Math.PI * 2,
+      });
+    }
+    seaweed.length = 0;
+    for (let i = 0; i < 8; i++) {
+      seaweed.push({
+        x: (i / 8) * W + rand(-20, 20),
+        height: 80 + Math.random() * 120,
+        phase: Math.random() * Math.PI * 2,
+        speed: 0.3 + Math.random() * 0.4,
+      });
+    }
+    fish.length = 0;
+    for (let i = 0; i < 5; i++) {
+      fish.push({
+        x: rand(0, W),
+        y: rand(H * 0.2, H * 0.65),
+        speed: 15 + Math.random() * 35,
+        size: 18 + Math.random() * 14,
+        dir: Math.random() > 0.5 ? 1 : -1,
+      });
+    }
+  }
+
+  function resetGameForPlay() {
+    score = 0;
+    playerY = H * 0.45;
+    playerVy = 0;
+    playerTilt = 0;
+    pipes = [];
+    nextPipeAt = performance.now() + 800;
+    roastMessage = null;
+    roastUntil = 0;
+    lastRoastAtScore = 0;
+    inputLocked = false;
+    playerOutfit = Math.random() < 0.5 ? 'tamid' : 'suit';
+    initDecor();
+  }
+
+  function spawnPipe(now) {
+    const d = selectedDifficulty;
+    const gapSize = rand(d.gapMin, d.gapMax);
+    const margin = 100;
+    const gapY = margin + gapSize / 2 + Math.random() * (H - margin * 2 - gapSize);
+    const type = Math.random() > 0.5 ? 'dsp' : 'akpsi';
+    pipes.push({
+      x: W + 40,
+      gapY,
+      gapSize,
+      type,
+      passed: false,
+    });
+    const baseInterval = 1650 - (d.pipeSpeed * 120);
+    nextPipeAt = now + Math.max(1100, baseInterval);
+  }
+
+  /** Player hitbox circle */
+  function getPlayerCircle() {
+    const px = W * 0.22;
+    const py = playerY;
+    return { x: px, y: py, r: 22 };
+  }
+
+  function circleRectOverlap(cx, cy, r, rx, ry, rw, rh) {
+    const nx = Math.max(rx, Math.min(cx, rx + rw));
+    const ny = Math.max(ry, Math.min(cy, ry + rh));
+    const dx = cx - nx;
+    const dy = cy - ny;
+    return dx * dx + dy * dy < r * r;
+  }
+
+  function checkCollisions() {
+    const p = getPlayerCircle();
+    const floorY = H - 50;
+    const ceilingY = 50;
+    if (p.y + p.r >= floorY || p.y - p.r <= ceilingY) return true;
+
+    const pipeW = 62;
+    for (const pipe of pipes) {
+      const left = pipe.x - pipeW / 2;
+      const right = pipe.x + pipeW / 2;
+      const topH = pipe.gapY - pipe.gapSize / 2;
+      const botY = pipe.gapY + pipe.gapSize / 2;
+
+      if (right < p.x - p.r || left > p.x + p.r) continue;
+
+      if (circleRectOverlap(p.x, p.y, p.r, left, 0, pipeW, topH)) return true;
+      if (circleRectOverlap(p.x, p.y, p.r, left, botY, pipeW, H - botY)) return true;
+    }
+    return false;
+  }
+
+  function triggerGameOver() {
+    if (screen !== Screen.PLAY) return;
+    screen = Screen.GAMEOVER;
+    inputLocked = true;
+    audio.gameOver();
+    if (score > highScore) {
+      highScore = score;
+      localStorage.setItem(STORAGE_KEY, String(highScore));
+    }
+    gameOverRoast = pickRoast();
+    transitionAlpha = 0;
+  }
+
+  function drawUnderwaterScene(dt, now, opts) {
+    const showGameplay = opts && opts.gameplay;
+    drawBackground(now);
+    drawBubbles(dt, now);
+    drawSeaweed(now);
+    drawFish(dt);
+    if (showGameplay) {
+      drawCeiling();
+      drawFloor();
+      drawPipes();
+      drawPlayer(now);
+    }
+  }
+
+  function maybeShowRoast() {
+    // Every 3 obstacles passed, show a temporary floating roast
+    if (score > 0 && score % 3 === 0 && score !== lastRoastAtScore) {
+      lastRoastAtScore = score;
+      roastMessage = pickRoast();
+      roastUntil = performance.now() + 2800;
+    }
+  }
+
+  function updatePlay(dt, now) {
+    playerVy += GRAVITY * dt;
+    playerY += playerVy * dt;
+    playerTilt = Math.max(-0.5, Math.min(0.9, playerVy * 0.002));
+
+    const speed = selectedDifficulty.pipeSpeed * 60 * dt;
+    for (const pipe of pipes) pipe.x -= speed;
+    pipes = pipes.filter((p) => p.x > -100);
+
+    if (now >= nextPipeAt) spawnPipe(now);
+
+    const px = getPlayerCircle().x;
+    for (const pipe of pipes) {
+      if (!pipe.passed && pipe.x + 31 < px) {
+        pipe.passed = true;
+        score++;
+        audio.score();
+        maybeShowRoast();
+      }
+    }
+
+    if (roastMessage && now > roastUntil) roastMessage = null;
+
+    if (checkCollisions()) triggerGameOver();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Drawing
+  // ---------------------------------------------------------------------------
+  function drawBackground(t) {
+    const g = ctx.createLinearGradient(0, 0, 0, H);
+    g.addColorStop(0, '#0d3d4a');
+    g.addColorStop(0.45, '#0a5c6e');
+    g.addColorStop(1, '#062238');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, H);
+
+    // subtle light rays
+    ctx.save();
+    ctx.globalAlpha = 0.08;
+    for (let i = 0; i < 5; i++) {
+      const x = (W / 6) * (i + 0.5) + Math.sin(t * 0.0003 + i) * 20;
+      const gr = ctx.createLinearGradient(x - 40, 0, x + 40, H);
+      gr.addColorStop(0, '#7ec8e3');
+      gr.addColorStop(1, 'transparent');
+      ctx.fillStyle = gr;
+      ctx.beginPath();
+      ctx.moveTo(x - 30, 0);
+      ctx.lineTo(x + 30, 0);
+      ctx.lineTo(x + 80, H);
+      ctx.lineTo(x - 80, H);
+      ctx.closePath();
+      ctx.fill();
+}
+    ctx.restore();
+  }
+
+  function drawBubbles(dt, t) {
+    ctx.save();
+    for (const b of bubbles) {
+      b.y -= b.speed * dt;
+      b.wobble += dt * 2;
+      b.x += Math.sin(b.wobble) * 15 * dt;
+      if (b.y < -20) {
+        b.y = H + 10;
+        b.x = Math.random() * W;
+      }
+      ctx.beginPath();
+      ctx.fillStyle = 'rgba(255,255,255,0.35)';
+      ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+      ctx.lineWidth = 1;
+      ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  function drawSeaweed(t) {
+    ctx.save();
+    for (const s of seaweed) {
+      const sway = Math.sin(t * 0.001 * s.speed + s.phase) * 12;
+      ctx.strokeStyle = 'rgba(20, 80, 70, 0.55)';
+      ctx.lineWidth = 6;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      const baseX = s.x + sway;
+      const baseY = H;
+      ctx.moveTo(baseX, baseY);
+      ctx.quadraticCurveTo(baseX + 20, baseY - s.height * 0.5, baseX + sway * 0.5, baseY - s.height);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  function drawFish(dt) {
+    ctx.save();
+    for (const f of fish) {
+      f.x += f.speed * f.dir * dt;
+      if (f.dir > 0 && f.x > W + 80) f.x = -80;
+      if (f.dir < 0 && f.x < -80) f.x = W + 80;
+      ctx.fillStyle = 'rgba(0,0,0,0.2)';
+      ctx.beginPath();
+      const flip = f.dir > 0 ? 1 : -1;
+      const fx = f.x;
+      const fy = f.y + Math.sin(f.x * 0.02) * 6;
+      ctx.ellipse(fx, fy, f.size * 0.6, f.size * 0.28, 0, 0, Math.PI * 2);
+      ctx.fill();
+      // tail
+      ctx.beginPath();
+      ctx.moveTo(fx - flip * f.size * 0.5, fy);
+      ctx.lineTo(fx - flip * f.size * 0.9, fy - f.size * 0.25);
+      ctx.lineTo(fx - flip * f.size * 0.9, fy + f.size * 0.25);
+      ctx.closePath();
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  function drawPillar(pipe, top, height) {
+    const w = 62;
+    const x = pipe.x - w / 2;
+    const isDSP = pipe.type === 'dsp';
+    const mainColor = isDSP ? '#1e3a5f' : '#4a1942';
+    const accent = isDSP ? '#f4c430' : '#c9a227';
+    const label = isDSP ? 'DSP' : 'AKΨ';
+
+    ctx.save();
+    ctx.fillStyle = mainColor;
+    ctx.strokeStyle = 'rgba(0,0,0,0.35)';
+    ctx.lineWidth = 3;
+    ctx.fillRect(x, top, w, height);
+    ctx.strokeRect(x, top, w, height);
+
+    // cap
+    const capH = 28;
+    const capPad = 6;
+    ctx.fillStyle = accent;
+    ctx.fillRect(x - capPad, top + (top === 0 ? height - capH : 0), w + capPad * 2, capH);
+    ctx.strokeRect(x - capPad, top + (top === 0 ? height - capH : 0), w + capPad * 2, capH);
+
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 13px Segoe UI, sans-serif';
+    ctx.textAlign = 'center';
+    const capY = top === 0 ? top + height - capH / 2 + 4 : top + capH / 2 + 4;
+    ctx.fillText(label, pipe.x, capY);
+
+    // banner stripes
+    ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+    ctx.lineWidth = 2;
+    for (let i = 4; i < height; i += 20) {
+      const yy = top + i;
+      ctx.beginPath();
+      ctx.moveTo(x + 4, yy);
+      ctx.lineTo(x + w - 4, yy);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  function drawPipes() {
+    for (const pipe of pipes) {
+      const topH = pipe.gapY - pipe.gapSize / 2;
+      const botY = pipe.gapY + pipe.gapSize / 2;
+      drawPillar(pipe, 0, topH);
+      drawPillar(pipe, botY, H - botY);
+    }
+  }
+
+  function drawPlayer(t) {
+    const px = W * 0.22;
+    const py = playerY;
+    const bob = Math.sin(t * 0.004) * 3;
+
+    ctx.save();
+    ctx.translate(px, py + bob);
+    ctx.rotate(playerTilt);
+
+    if (playerOutfit === 'suit') {
+      // Business suit + tie (underwater networking energy)
+      ctx.fillStyle = '#37474f';
+      ctx.strokeStyle = '#263238';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.ellipse(0, 0, 24, 20, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = '#eceff1';
+      ctx.beginPath();
+      ctx.moveTo(-7, -11);
+      ctx.lineTo(0, -4);
+      ctx.lineTo(7, -11);
+      ctx.lineTo(0, -13);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = '#b71c1c';
+      ctx.fillRect(-3, -4, 6, 22);
+      ctx.strokeStyle = '#7f0000';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(-3, -4, 6, 22);
+    } else {
+      // TAMID-style shirt
+      ctx.fillStyle = '#1565c0';
+      ctx.strokeStyle = '#0d47a1';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.ellipse(0, 0, 24, 20, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = '#e3f2fd';
+      ctx.beginPath();
+      ctx.moveTo(-8, -12);
+      ctx.lineTo(0, -6);
+      ctx.lineTo(8, -12);
+      ctx.lineTo(0, -14);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = '#ffca28';
+      ctx.font = 'bold 8px Segoe UI, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('T', 0, 6);
+    }
+
+    // eyes
+    ctx.fillStyle = '#fff';
+    ctx.beginPath();
+    ctx.arc(-8, -2, 6, 0, Math.PI * 2);
+    ctx.arc(8, -2, 6, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#222';
+    ctx.beginPath();
+    ctx.arc(-7, -2, 3, 0, Math.PI * 2);
+    ctx.arc(9, -2, 3, 0, Math.PI * 2);
+    ctx.fill();
+
+    // name tag area
+    ctx.restore();
+
+    ctx.save();
+    ctx.translate(px, py + bob);
+    ctx.rotate(playerTilt);
+    ctx.fillStyle = 'rgba(255,255,255,0.95)';
+    ctx.strokeStyle = '#333';
+    ctx.lineWidth = 1;
+    ctx.font = 'bold 7px Segoe UI, sans-serif';
+    ctx.fillRect(-18, 14, 36, 12);
+    ctx.strokeRect(-18, 14, 36, 12);
+    ctx.fillStyle = '#111';
+    ctx.textAlign = 'center';
+    ctx.fillText('Kyle Shibata', 0, 23);
+    ctx.restore();
+  }
+
+  function drawFloor() {
+    const y = H - 50;
+    const g = ctx.createLinearGradient(0, y, 0, H);
+    g.addColorStop(0, '#3d2817');
+    g.addColorStop(1, '#1a1209');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, y, W, H - y);
+    ctx.fillStyle = 'rgba(90, 70, 50, 0.4)';
+    for (let x = 0; x < W; x += 24) ctx.fillRect(x, y, 12, 8);
+  }
+
+  function drawCeiling() {
+    const h = 50;
+    ctx.fillStyle = 'rgba(10, 30, 40, 0.85)';
+    ctx.fillRect(0, 0, W, h);
+  }
+
+  function drawHUD() {
+    ctx.save();
+    ctx.fillStyle = 'rgba(255,255,255,0.95)';
+    ctx.font = 'bold 28px Segoe UI, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.shadowColor = 'rgba(0,0,0,0.5)';
+    ctx.shadowBlur = 6;
+    ctx.fillText(String(score), W / 2, 48);
+    ctx.shadowBlur = 0;
+
+    ctx.font = '14px Segoe UI, sans-serif';
+    ctx.fillStyle = 'rgba(180, 230, 255, 0.85)';
+    ctx.fillText(selectedDifficulty.label, W / 2, 72);
+    ctx.restore();
+  }
+
+  function drawRoast(now) {
+    if (!roastMessage || screen !== Screen.PLAY) return;
+    const alpha = Math.min(1, (now - (roastUntil - 2800)) / 400) *
+      Math.min(1, (roastUntil - now) / 500);
+    if (alpha <= 0) return;
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = 'rgba(255, 248, 220, 0.95)';
+    ctx.strokeStyle = 'rgba(0,0,0,0.2)';
+    ctx.lineWidth = 2;
+    const tw = Math.min(W - 40, 360);
+    ctx.font = 'italic 600 15px Segoe UI, sans-serif';
+    ctx.textAlign = 'center';
+    const lines = wrapText(roastMessage, tw - 24);
+    const lineH = 20;
+    const boxH = lines.length * lineH + 20;
+    const boxY = H * 0.22;
+    ctx.roundRect(W / 2 - tw / 2, boxY, tw, boxH, 10);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = '#1a1a2e';
+    lines.forEach((line, i) => {
+      ctx.fillText(line, W / 2, boxY + 18 + i * lineH);
+    });
+    ctx.restore();
+  }
+
+  function wrapText(text, maxW) {
+    const words = text.split(' ');
+    const lines = [];
+    let line = '';
+    ctx.font = 'italic 600 15px Segoe UI, sans-serif';
+    for (const w of words) {
+      const test = line ? line + ' ' + w : w;
+      if (ctx.measureText(test).width > maxW && line) {
+        lines.push(line);
+        line = w;
+      } else line = test;
+     }
+    if (line) lines.push(line);
+    return lines;
+  }
+
+  function drawStartScreen(dt, now) {
+    drawUnderwaterScene(dt, now, { gameplay: false });
+
+    ctx.save();
+    ctx.fillStyle = 'rgba(0, 20, 40, 0.45)';
+    ctx.fillRect(0, 0, W, H);
+
+    ctx.fillStyle = '#e0f7fa';
+    ctx.font = 'bold 36px Segoe UI, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.shadowColor = 'rgba(0,0,0,0.6)';
+    ctx.shadowBlur = 8;
+    ctx.fillText('Flappy TAMID', W / 2, 120);
+    ctx.shadowBlur = 0;
+
+    ctx.fillStyle = 'rgba(255,255,255,0.85)';
+    ctx.font = '16px Segoe UI, sans-serif';
+    ctx.fillText('Choose difficulty', W / 2, 165);
+
+    const btnY = 210;
+    const btnH = 44;
+    const btnW = 200;
+    const gap = 12;
+    const diffs = [DIFFICULTY.easy, DIFFICULTY.medium, DIFFICULTY.hard];
+    diffs.forEach((d, i) => {
+      const bx = W / 2 - btnW / 2;
+      const by = btnY + i * (btnH + gap);
+      const active = selectedDifficulty.id === d.id;
+      ctx.fillStyle = active ? '#26a69a' : 'rgba(255,255,255,0.15)';
+      ctx.strokeStyle = active ? '#80cbc4' : 'rgba(255,255,255,0.4)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.roundRect(bx, by, btnW, btnH, 10);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = '#fff';
+      ctx.font = 'bold 18px Segoe UI, sans-serif';
+      ctx.fillText(d.label, W / 2, by + 29);
+    });
+
+    ctx.fillStyle = 'rgba(200, 235, 255, 0.9)';
+    ctx.font = '15px Segoe UI, sans-serif';
+    ctx.fillText('Press Space or Tap to Start', W / 2, H - 120);
+
+    ctx.font = '13px Segoe UI, sans-serif';
+    ctx.fillStyle = 'rgba(180, 220, 240, 0.7)';
+    ctx.fillText('Flap with Space • Click • Tap', W / 2, H - 88);
+
+    ctx.restore();
+  }
+
+  function drawGameOver() {
+    ctx.save();
+    ctx.globalAlpha = transitionAlpha;
+    ctx.fillStyle = 'rgba(0, 15, 30, 0.72)';
+    ctx.fillRect(0, 0, W, H);
+
+    const boxW = 320;
+    const boxH = 300;
+    const bx = (W - boxW) / 2;
+    const by = (H - boxH) / 2;
+
+    ctx.fillStyle = '#eceff1';
+    ctx.strokeStyle = '#263238';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.roundRect(bx, by, boxW, boxH, 16);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = '#c62828';
+    ctx.font = 'bold 32px Segoe UI, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('Game Over', W / 2, by + 52);
+
+    ctx.fillStyle = '#333';
+    ctx.font = '20px Segoe UI, sans-serif';
+    ctx.fillText('Score: ' + score, W / 2, by + 100);
+    ctx.fillText('High: ' + highScore, W / 2, by + 130);
+
+    ctx.fillStyle = '#5d4037';
+    ctx.font = 'italic 14px Segoe UI, sans-serif';
+    const groLines = wrapText(gameOverRoast, boxW - 40);
+    groLines.forEach((line, i) => {
+      ctx.fillText(line, W / 2, by + 170 + i * 18);
+    });
+
+    // Restart button
+    const rW = 220;
+    const rH = 42;
+    const rx = W / 2 - rW / 2;
+    const ry = by + boxH - 95;
+    ctx.fillStyle = '#00897b';
+    ctx.strokeStyle = '#004d40';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.roundRect(rx, ry, rW, rH, 10);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 17px Segoe UI, sans-serif';
+    ctx.fillText('Play Again', W / 2, ry + 28);
+
+    // Menu link
+    ctx.fillStyle = '#1565c0';
+    ctx.font = '14px Segoe UI, sans-serif';
+    ctx.fillText('Change difficulty', W / 2, by + boxH - 38);
+
+    ctx.restore();
+  }
+
+  function hitTestStartButtons(mx, my) {
+    const btnY = 210;
+    const btnH = 44;
+    const btnW = 200;
+    const gap = 12;
+    const diffs = [DIFFICULTY.easy, DIFFICULTY.medium, DIFFICULTY.hard];
+    for (let i = 0; i < diffs.length; i++) {
+      const bx = W / 2 - btnW / 2;
+      const by = btnY + i * (btnH + gap);
+      if (mx >= bx && mx <= bx + btnW && my >= by && my <= by + btnH) {
+        return diffs[i];
+      }
+    }
+    return null;
+  }
+
+  function hitTestGameOver(mx, my) {
+    const boxW = 320;
+    const boxH = 300;
+    const bx = (W - boxW) / 2;
+    const by = (H - boxH) / 2;
+    const rW = 220;
+    const rH = 42;
+    const rx = W / 2 - rW / 2;
+    const ry = by + boxH - 95;
+    const menuY = by + boxH - 50;
+
+    if (mx >= rx && mx <= rx + rW && my >= ry && my <= ry + rH) return 'restart';
+    if (mx >= bx && mx <= bx + boxW && my >= menuY - 20 && my <= menuY + 10) return 'menu';
+    return null;
+  }
+
+  function canvasToGameCoords(clientX, clientY) {
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = W / rect.width;
+    const scaleY = H / rect.height;
+    return {
+      x: (clientX - rect.left) * scaleX,
+      y: (clientY - rect.top) * scaleY,
+    };
+  }
+
+  function onPointerDown(ev) {
+    audio.resume();
+    const { x, y } = canvasToGameCoords(ev.clientX, ev.clientY);
+
+    if (screen === Screen.START) {
+      const d = hitTestStartButtons(x, y);
+      if (d) selectedDifficulty = d;
+      else {
+        resetGameForPlay();
+        screen = Screen.PLAY;
+        playerVy = FLAP_IMPULSE * 0.5;
+      }
+      return;
+    }
+
+    if (screen === Screen.GAMEOVER) {
+      const hit = hitTestGameOver(x, y);
+      if (hit === 'restart') {
+        resetGameForPlay();
+        screen = Screen.PLAY;
+        inputLocked = false;
+        playerVy = FLAP_IMPULSE * 0.5;
+      } else if (hit === 'menu') {
+        screen = Screen.START;
+        inputLocked = false;
+      }
+      return;
+    }
+
+    if (screen === Screen.PLAY && !inputLocked) {
+      playerVy = FLAP_IMPULSE;
+      audio.flap();
+    }
+  }
+
+  function onKeyDown(ev) {
+    if (ev.code !== 'Space') return;
+    ev.preventDefault();
+    audio.resume();
+
+    if (screen === Screen.START) {
+      resetGameForPlay();
+      screen = Screen.PLAY;
+      playerVy = FLAP_IMPULSE * 0.5;
+      return;
+    }
+
+    if (screen === Screen.GAMEOVER) {
+      // Space on game over: restart (same as main button)
+      resetGameForPlay();
+      screen = Screen.PLAY;
+      inputLocked = false;
+      playerVy = FLAP_IMPULSE * 0.5;
+      return;
+    }
+
+    if (screen === Screen.PLAY && !inputLocked) {
+      playerVy = FLAP_IMPULSE;
+      audio.flap();
+    }
+  }
+
+  canvas.addEventListener('pointerdown', onPointerDown);
+  window.addEventListener('keydown', onKeyDown);
+
+  // ---------------------------------------------------------------------------
+  // Main loop
+  // ---------------------------------------------------------------------------
+  let lastT = performance.now();
+
+  function frame(now) {
+    const dt = Math.min(0.033, (now - lastT) / 1000);
+    lastT = now;
+
+    if (screen === Screen.START) {
+      drawStartScreen(dt, now);
+      requestAnimationFrame(frame);
+      return;
+    }
+
+    if (screen === Screen.PLAY) {
+      updatePlay(dt, now);
+    }
+
+    drawUnderwaterScene(dt, now, { gameplay: true });
+
+    if (screen === Screen.PLAY) {
+      drawHUD();
+      drawRoast(now);
+    }
+
+    if (screen === Screen.GAMEOVER) {
+      transitionAlpha = Math.min(1, transitionAlpha + dt * 2.2);
+      drawGameOver();
+    }
+
+    requestAnimationFrame(frame);
+  }
+
+  resize();
+  window.addEventListener('resize', resize);
+  initDecor();
+  requestAnimationFrame(frame);
+})();
+  </script>
+</body>
+</html>
