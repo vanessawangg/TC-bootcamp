@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-  <title>Sinker Swim</title>
+  <title>Sink or Swim: The Kyle Shibata Story</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     html, body {
@@ -110,7 +110,7 @@
 </head>
 <body>
   <div id="wrap">
-    <canvas id="game" aria-label="Sinker Swim game canvas"></canvas>
+    <canvas id="game" aria-label="Sink or Swim: The Kyle Shibata Story"></canvas>
     <div class="name-row" aria-hidden="true">
       <label for="playerName">Your name</label>
       <div class="name-inline">
@@ -135,6 +135,9 @@
     medium: { id: 'medium', label: 'Medium', pipeSpeed: 3.0, gapMin: 175, gapMax: 218 },
     hard:   { id: 'hard',   label: 'Hard',   pipeSpeed: 3.8, gapMin: 145, gapMax: 188 },
   };
+
+  const GAME_TITLE_MAIN = 'Sink or Swim';
+  const GAME_TITLE_SUB = 'The Kyle Shibata Story';
 
   const ROAST_MESSAGES = [
     'DSP wants your resume!',
@@ -324,13 +327,13 @@
 
   /**
    * Pin the name field to the start screen layout: just under the title
-   * (title ~y=120 in 800px-tall game space; difficulty copy starts ~188).
+   * (below two-line title; difficulty copy lower on start screen).
    */
   function positionNameRow() {
     const row = document.querySelector('#wrap .name-row');
     if (!row || !canvas) return;
     const r = canvas.getBoundingClientRect();
-    const yBelowTitle = 128;
+    const yBelowTitle = 160;
     row.style.left = r.left + r.width / 2 + 'px';
     row.style.top = r.top + (yBelowTitle / H) * r.height + 'px';
     row.style.transform = 'translateX(-50%)';
@@ -342,6 +345,9 @@
   class GameAudio {
     constructor() {
       this.ctx = null;
+      this._bgmGen = 0;
+      this._bgmTimeout = null;
+      this._bgmRunning = false;
     }
 
     ensure() {
@@ -433,6 +439,76 @@
       gain.connect(ac.destination);
       osc.start(t);
       osc.stop(t + 0.48);
+    }
+
+    /**
+     * Procedural “Baby Shark”-style loop (simple melody, Web Audio only — not a recording).
+     */
+    stopBabySharkBgm() {
+      this._bgmRunning = false;
+      this._bgmGen++;
+      if (this._bgmTimeout != null) {
+        clearTimeout(this._bgmTimeout);
+        this._bgmTimeout = null;
+      }
+    }
+
+    startBabySharkBgm() {
+      const ac = this.ensure();
+      if (!ac) return;
+      this.resume();
+      this.stopBabySharkBgm();
+      this._bgmRunning = true;
+      const gen = this._bgmGen;
+      // D-D-E-G | G-G-G-E-D (baby shark… “doo doo”) — light, catchy, loops
+      const PHRASE = [
+        [293.66, 0.13],
+        [293.66, 0.13],
+        [329.63, 0.13],
+        [392, 0.16],
+        [392, 0.13],
+        [392, 0.13],
+        [329.63, 0.13],
+        [293.66, 0.16],
+        [293.66, 0.13],
+        [329.63, 0.13],
+        [392, 0.13],
+        [392, 0.13],
+        [329.63, 0.13],
+        [293.66, 0.15],
+        [293.66, 0.1],
+        [261.63, 0.18],
+      ];
+      const gap = 0.12;
+      const self = this;
+      function playPhrase() {
+        if (!self._bgmRunning || gen !== self._bgmGen) return;
+        const t0 = ac.currentTime + 0.02;
+        let t = t0;
+        let phraseWallMs = 0;
+        for (let i = 0; i < PHRASE.length; i++) {
+          const freq = PHRASE[i][0];
+          const dur = PHRASE[i][1];
+          if (gen !== self._bgmGen || !self._bgmRunning) return;
+          const oscN = ac.createOscillator();
+          const gN = ac.createGain();
+          oscN.type = 'triangle';
+          oscN.frequency.setValueAtTime(freq, t);
+          const v = 0.052;
+          gN.gain.setValueAtTime(0, t);
+          gN.gain.linearRampToValueAtTime(v, t + 0.018);
+          gN.gain.linearRampToValueAtTime(v * 0.88, t + Math.max(0.04, dur - 0.03));
+          gN.gain.exponentialRampToValueAtTime(0.001, t + dur);
+          oscN.connect(gN);
+          gN.connect(ac.destination);
+          oscN.start(t);
+          oscN.stop(t + dur + 0.03);
+          phraseWallMs += (dur + 0.02) * 1000;
+          t += dur + 0.02;
+        }
+        self._bgmTimeout = setTimeout(playPhrase, phraseWallMs + gap * 1000);
+      }
+      playPhrase();
     }
   }
 
@@ -721,6 +797,7 @@
 
   function triggerGameOver() {
     if (screen !== Screen.PLAY) return;
+    audio.stopBabySharkBgm();
     screen = Screen.GAMEOVER;
     inputLocked = true;
     audio.gameOver();
@@ -1104,19 +1181,36 @@
     ctx.fillRect(0, 0, W, h);
   }
 
+  /** Title banner during active play / frozen game-over frame (drawn above score). */
+  function drawGameTitleHeader() {
+    ctx.save();
+    ctx.textAlign = 'center';
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.45)';
+    ctx.shadowBlur = 3;
+    ctx.font = 'bold 12px Segoe UI, sans-serif';
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.94)';
+    ctx.fillText(GAME_TITLE_MAIN, W / 2, 19);
+    ctx.shadowBlur = 0;
+    ctx.font = '600 9px Segoe UI, sans-serif';
+    ctx.fillStyle = 'rgba(200, 235, 255, 0.9)';
+    ctx.fillText(GAME_TITLE_SUB, W / 2, 33);
+    ctx.restore();
+  }
+
   function drawHUD() {
     ctx.save();
+    drawGameTitleHeader();
     ctx.fillStyle = 'rgba(255,255,255,0.95)';
     ctx.font = 'bold 28px Segoe UI, sans-serif';
     ctx.textAlign = 'center';
     ctx.shadowColor = 'rgba(0,0,0,0.5)';
     ctx.shadowBlur = 6;
-    ctx.fillText(String(score), W / 2, 48);
+    ctx.fillText(String(score), W / 2, 62);
     ctx.shadowBlur = 0;
 
     ctx.font = '14px Segoe UI, sans-serif';
     ctx.fillStyle = 'rgba(180, 230, 255, 0.85)';
-    ctx.fillText(selectedDifficulty.label, W / 2, 72);
+    ctx.fillText(selectedDifficulty.label, W / 2, 86);
     ctx.restore();
   }
 
@@ -1171,18 +1265,21 @@
     ctx.fillRect(0, 0, W, H);
 
     ctx.fillStyle = '#e0f7fa';
-    ctx.font = 'bold 36px Segoe UI, sans-serif';
     ctx.textAlign = 'center';
     ctx.shadowColor = 'rgba(0,0,0,0.6)';
     ctx.shadowBlur = 8;
-    ctx.fillText('Sinker Swim', W / 2, 120);
+    ctx.font = 'bold 30px Segoe UI, sans-serif';
+    ctx.fillText(GAME_TITLE_MAIN, W / 2, 98);
+    ctx.font = 'bold 16px Segoe UI, sans-serif';
+    ctx.fillStyle = 'rgba(200, 235, 255, 0.95)';
+    ctx.fillText(GAME_TITLE_SUB, W / 2, 128);
     ctx.shadowBlur = 0;
 
     ctx.fillStyle = 'rgba(255,255,255,0.85)';
     ctx.font = '16px Segoe UI, sans-serif';
-    ctx.fillText('Choose difficulty', W / 2, 262);
+    ctx.fillText('Choose difficulty', W / 2, 278);
 
-    const btnY = 296;
+    const btnY = 312;
     const btnH = 44;
     const btnW = 200;
     const gap = 12;
@@ -1352,7 +1449,7 @@
   }
 
   function hitTestStartButtons(mx, my) {
-    const btnY = 296;
+    const btnY = 312;
     const btnH = 44;
     const btnW = 200;
     const gap = 12;
@@ -1409,6 +1506,7 @@
         resetGameForPlay();
         screen = Screen.PLAY;
         playerVy = FLAP_IMPULSE * 0.5;
+        audio.startBabySharkBgm();
       }
       return;
     }
@@ -1420,7 +1518,9 @@
         screen = Screen.PLAY;
         inputLocked = false;
         playerVy = FLAP_IMPULSE * 0.5;
+        audio.startBabySharkBgm();
       } else if (hit === 'menu') {
+        audio.stopBabySharkBgm();
         screen = Screen.START;
         inputLocked = false;
         fetchLeaderboard();
@@ -1449,6 +1549,7 @@
       resetGameForPlay();
       screen = Screen.PLAY;
       playerVy = FLAP_IMPULSE * 0.5;
+      audio.startBabySharkBgm();
       return;
     }
 
@@ -1458,6 +1559,7 @@
       screen = Screen.PLAY;
       inputLocked = false;
       playerVy = FLAP_IMPULSE * 0.5;
+      audio.startBabySharkBgm();
       return;
     }
 
@@ -1496,6 +1598,8 @@
     if (screen === Screen.PLAY) {
       drawHUD();
       drawRoast(now);
+    } else if (screen === Screen.GAMEOVER) {
+      drawGameTitleHeader();
     }
 
     if (screen === Screen.GAMEOVER) {
