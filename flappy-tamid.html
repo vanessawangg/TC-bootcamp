@@ -340,14 +340,16 @@
   }
 
   // ---------------------------------------------------------------------------
-  // Web Audio API — procedural sounds only
+  // Web Audio API (SFX) + HTMLAudioElement for BGM
   // ---------------------------------------------------------------------------
+  /** Same folder as this HTML; starts at BGM_START_SEC so each run begins at that mark. */
+  const BGM_SRC = encodeURI('20260328 130325.m4a');
+  const BGM_START_SEC = 20;
+
   class GameAudio {
     constructor() {
       this.ctx = null;
-      this._bgmGen = 0;
-      this._bgmTimeout = null;
-      this._bgmRunning = false;
+      this._bgmEl = null;
     }
 
     ensure() {
@@ -441,74 +443,36 @@
       osc.stop(t + 0.48);
     }
 
-    /**
-     * Procedural “Baby Shark”-style loop (simple melody, Web Audio only — not a recording).
-     */
+    /** Pause background music (m4a/mp3 next to this page). */
     stopBabySharkBgm() {
-      this._bgmRunning = false;
-      this._bgmGen++;
-      if (this._bgmTimeout != null) {
-        clearTimeout(this._bgmTimeout);
-        this._bgmTimeout = null;
+      if (this._bgmEl) {
+        this._bgmEl.pause();
+        try {
+          this._bgmEl.currentTime = BGM_START_SEC;
+        } catch (_) { /* ignore */ }
       }
     }
 
+    ensureBgmEl() {
+      if (this._bgmEl) return this._bgmEl;
+      const el = new Audio(BGM_SRC);
+      el.preload = 'auto';
+      el.volume = 0.45;
+      // loop=true replays from 0:00; we want each cycle to begin at BGM_START_SEC
+      el.addEventListener('ended', () => {
+        el.currentTime = BGM_START_SEC;
+        void el.play();
+      });
+      this._bgmEl = el;
+      return el;
+    }
+
     startBabySharkBgm() {
-      const ac = this.ensure();
-      if (!ac) return;
       this.resume();
       this.stopBabySharkBgm();
-      this._bgmRunning = true;
-      const gen = this._bgmGen;
-      // D-D-E-G | G-G-G-E-D (baby shark… “doo doo”) — light, catchy, loops
-      const PHRASE = [
-        [293.66, 0.13],
-        [293.66, 0.13],
-        [329.63, 0.13],
-        [392, 0.16],
-        [392, 0.13],
-        [392, 0.13],
-        [329.63, 0.13],
-        [293.66, 0.16],
-        [293.66, 0.13],
-        [329.63, 0.13],
-        [392, 0.13],
-        [392, 0.13],
-        [329.63, 0.13],
-        [293.66, 0.15],
-        [293.66, 0.1],
-        [261.63, 0.18],
-      ];
-      const gap = 0.12;
-      const self = this;
-      function playPhrase() {
-        if (!self._bgmRunning || gen !== self._bgmGen) return;
-        const t0 = ac.currentTime + 0.02;
-        let t = t0;
-        let phraseWallMs = 0;
-        for (let i = 0; i < PHRASE.length; i++) {
-          const freq = PHRASE[i][0];
-          const dur = PHRASE[i][1];
-          if (gen !== self._bgmGen || !self._bgmRunning) return;
-          const oscN = ac.createOscillator();
-          const gN = ac.createGain();
-          oscN.type = 'triangle';
-          oscN.frequency.setValueAtTime(freq, t);
-          const v = 0.052;
-          gN.gain.setValueAtTime(0, t);
-          gN.gain.linearRampToValueAtTime(v, t + 0.018);
-          gN.gain.linearRampToValueAtTime(v * 0.88, t + Math.max(0.04, dur - 0.03));
-          gN.gain.exponentialRampToValueAtTime(0.001, t + dur);
-          oscN.connect(gN);
-          gN.connect(ac.destination);
-          oscN.start(t);
-          oscN.stop(t + dur + 0.03);
-          phraseWallMs += (dur + 0.02) * 1000;
-          t += dur + 0.02;
-        }
-        self._bgmTimeout = setTimeout(playPhrase, phraseWallMs + gap * 1000);
-      }
-      playPhrase();
+      const el = this.ensureBgmEl();
+      el.currentTime = BGM_START_SEC;
+      void el.play().catch(() => {});
     }
   }
 
