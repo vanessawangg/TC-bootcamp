@@ -64,6 +64,72 @@
   ];
 
   const STORAGE_KEY = 'flappy_tamid_high_score';
+  const PLAYER_NAME_KEY = 'flappy_tamid_player_name';
+
+  /** Same host when served via `npm start`; fallback for file:// opens. */
+  const API_BASE =
+    window.location.protocol === 'file:'
+      ? 'http://127.0.0.1:3456'
+      : '';
+
+  // ---------------------------------------------------------------------------
+  // Leaderboard (SQLite via local server)
+  // ---------------------------------------------------------------------------
+  /** @type {{ playerName: string, score: number, difficulty: string }[]} */
+  let leaderboardRows = [];
+  let leaderboardStatus = 'idle';
+  let leaderboardLastFetch = 0;
+
+  function diffShort(id) {
+    if (id === 'easy') return 'E';
+    if (id === 'hard') return 'H';
+    return 'M';
+  }
+
+  function fetchLeaderboard(force) {
+    const now = performance.now();
+    if (!force && now - leaderboardLastFetch < 1200) return;
+    leaderboardLastFetch = now;
+    leaderboardStatus = 'loading';
+    fetch(API_BASE + '/api/leaderboard?limit=12')
+      .then(function (r) {
+        if (!r.ok) throw new Error('bad');
+        return r.json();
+      })
+      .then(function (data) {
+        leaderboardRows = Array.isArray(data.rows) ? data.rows : [];
+        leaderboardStatus = 'ok';
+      })
+      .catch(function () {
+        leaderboardStatus = 'error';
+      });
+  }
+
+  function ensurePlayerName() {
+    if (localStorage.getItem(PLAYER_NAME_KEY)) return;
+    const def = 'Player';
+    const raw = typeof prompt === 'function' ? prompt('Name for the leaderboard (max 24 characters):', def) : def;
+    const name = (raw != null && String(raw).trim()) ? String(raw).trim().slice(0, 24) : def;
+    localStorage.setItem(PLAYER_NAME_KEY, name);
+  }
+
+  function submitScoreToLeaderboard(finalScore) {
+    if (finalScore <= 0) return;
+    const playerName = localStorage.getItem(PLAYER_NAME_KEY) || 'Player';
+    fetch(API_BASE + '/api/scores', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        playerName,
+        score: finalScore,
+        difficulty: selectedDifficulty.id,
+      }),
+    })
+      .catch(function () {})
+      .finally(function () {
+        fetchLeaderboard(true);
+      });
+  }
 
   // ---------------------------------------------------------------------------
   // DOM & canvas sizing
@@ -362,6 +428,10 @@
     if (score > highScore) {
       highScore = score;
       localStorage.setItem(STORAGE_KEY, String(highScore));
+    }
+    if (score > 0) {
+      ensurePlayerName();
+      submitScoreToLeaderboard(score);
     }
     gameOverRoast = pickRoast();
     transitionAlpha = 0;
@@ -761,11 +831,49 @@
 
     ctx.fillStyle = 'rgba(200, 235, 255, 0.9)';
     ctx.font = '15px Segoe UI, sans-serif';
-    ctx.fillText('Press Space or Tap to Start', W / 2, H - 120);
+    ctx.fillText('Press Space or Tap to Start', W / 2, H - 168);
 
     ctx.font = '13px Segoe UI, sans-serif';
     ctx.fillStyle = 'rgba(180, 220, 240, 0.7)';
-    ctx.fillText('Flap with Space • Click • Tap', W / 2, H - 88);
+    ctx.fillText('Flap with Space • Click • Tap', W / 2, H - 140);
+
+    const lbY0 = H - 128;
+    ctx.textAlign = 'left';
+    ctx.font = 'bold 11px Segoe UI, sans-serif';
+    ctx.fillStyle = 'rgba(255, 224, 130, 0.95)';
+    ctx.fillText('LEADERBOARD', 24, lbY0);
+    ctx.font = '10px Segoe UI, sans-serif';
+    ctx.fillStyle = 'rgba(200, 230, 255, 0.85)';
+    if (leaderboardStatus === 'loading' && leaderboardRows.length === 0) {
+      ctx.fillText('Loading…', 24, lbY0 + 16);
+    } else if (leaderboardStatus === 'error' && leaderboardRows.length === 0) {
+      ctx.fillStyle = 'rgba(255, 180, 180, 0.85)';
+      ctx.fillText('Run: npm start  (then open via server)', 24, lbY0 + 16);
+    } else if (!leaderboardRows.length) {
+      ctx.fillText('No scores yet — be the first.', 24, lbY0 + 16);
+    } else {
+      leaderboardRows.forEach(function (row, i) {
+        const line =
+          String(i + 1) +
+          '. ' +
+          row.playerName +
+          '  ' +
+          row.score +
+          ' (' +
+          diffShort(row.difficulty) +
+          ')';
+        ctx.fillStyle = i < 3 ? 'rgba(255, 241, 118, 0.95)' : 'rgba(200, 230, 255, 0.88)';
+        ctx.fillText(line.length > 42 ? line.slice(0, 40) + '…' : line, 24, lbY0 + 16 + i * 14);
+      });
+    }
+
+    const pname = localStorage.getItem(PLAYER_NAME_KEY);
+    if (pname) {
+      ctx.textAlign = 'center';
+      ctx.font = '11px Segoe UI, sans-serif';
+      ctx.fillStyle = 'rgba(180, 220, 240, 0.65)';
+      ctx.fillText('Playing as: ' + pname, W / 2, H - 22);
+    }
 
     ctx.restore();
   }
@@ -897,6 +1005,7 @@
       } else if (hit === 'menu') {
         screen = Screen.START;
         inputLocked = false;
+        fetchLeaderboard(true);
       }
       return;
     }
@@ -974,6 +1083,7 @@
   resize();
   window.addEventListener('resize', resize);
   initDecor();
+  fetchLeaderboard(true);
   requestAnimationFrame(frame);
 })();
   </script>
