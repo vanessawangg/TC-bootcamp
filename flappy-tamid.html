@@ -21,6 +21,42 @@
       display: flex;
       align-items: center;
       justify-content: center;
+      position: relative;
+    }
+    #wrap.start-screen .name-row {
+      display: flex;
+    }
+    .name-row {
+      display: none;
+      position: fixed;
+      left: 50%;
+      top: max(10px, calc(50vh - 290px));
+      transform: translateX(-50%);
+      z-index: 30;
+      flex-direction: column;
+      align-items: center;
+      gap: 6px;
+      pointer-events: auto;
+    }
+    .name-row label {
+      font-size: 13px;
+      font-weight: 600;
+      color: #b2ebf2;
+      text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+    }
+    .name-row input {
+      width: min(240px, 85vw);
+      padding: 10px 14px;
+      font-size: 16px;
+      border-radius: 10px;
+      border: 2px solid #26a69a;
+      background: rgba(255, 255, 255, 0.96);
+      color: #102027;
+    }
+    .name-row input:focus {
+      outline: none;
+      border-color: #80cbc4;
+      box-shadow: 0 0 0 3px rgba(38, 166, 154, 0.35);
     }
     canvas {
       display: block;
@@ -32,6 +68,10 @@
 </head>
 <body>
   <div id="wrap">
+    <div class="name-row" aria-hidden="true">
+      <label for="playerName">Your name</label>
+      <input type="text" id="playerName" maxlength="18" placeholder="Required to play" autocomplete="nickname" spellcheck="false" />
+    </div>
     <canvas id="game" aria-label="Flappy TAMID game canvas"></canvas>
   </div>
 
@@ -64,8 +104,112 @@
   ];
 
   const STORAGE_KEY = 'flappy_tamid_high_score';
+  const PLAYER_NAME_KEY = 'flappy_tamid_player_name';
+  const LEADERBOARD_KEY = 'flappy_tamid_leaderboard_v1';
+  const LEADERBOARD_MAX = 20;
   /** Portrait sprite (same folder as this HTML file) */
   const PLAYER_SPRITE_PATH = 'kyle-flappy-sprite.png';
+
+  /** @type {HTMLInputElement | null} */
+  let nameInputEl = null;
+
+  let leaderboardStatus = 'idle';
+  /** @type {{ playerName: string, score: number, difficulty: string, ts?: number }[]} */
+  let leaderboardRows = [];
+
+  function diffShort(d) {
+    if (d === 'easy') return 'E';
+    if (d === 'medium') return 'M';
+    if (d === 'hard') return 'H';
+    return '?';
+  }
+
+  function getPlayerDisplayName() {
+    const fromInput = nameInputEl ? nameInputEl.value.trim() : '';
+    const fromStore = (localStorage.getItem(PLAYER_NAME_KEY) || '').trim();
+    const n = fromInput || fromStore || 'Guest';
+    return n.slice(0, 18);
+  }
+
+  /** Must enter a name (or have one saved) before starting a run */
+  function hasPlayerNameForStart() {
+    const t = nameInputEl ? nameInputEl.value.trim() : '';
+    const s = (localStorage.getItem(PLAYER_NAME_KEY) || '').trim();
+    return t.length > 0 || s.length > 0;
+  }
+
+  function persistPlayerName() {
+    const t = nameInputEl ? nameInputEl.value.trim() : '';
+    if (t) localStorage.setItem(PLAYER_NAME_KEY, t.slice(0, 18));
+  }
+
+  function loadLeaderboardFromStorage() {
+    try {
+      const raw = localStorage.getItem(LEADERBOARD_KEY);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+      return parsed
+        .filter(function (r) {
+          return r &&
+            typeof r.playerName === 'string' &&
+            typeof r.score === 'number' &&
+            typeof r.difficulty === 'string';
+        })
+        .sort(function (a, b) {
+          return b.score - a.score || (b.ts || 0) - (a.ts || 0);
+        })
+        .slice(0, LEADERBOARD_MAX);
+    } catch (e) {
+      return [];
+    }
+  }
+
+  function saveLeaderboardToStorage(rows) {
+    try {
+      localStorage.setItem(LEADERBOARD_KEY, JSON.stringify(rows.slice(0, LEADERBOARD_MAX)));
+    } catch (e) { /* quota */ }
+  }
+
+  function fetchLeaderboard() {
+    leaderboardStatus = 'idle';
+    leaderboardRows = loadLeaderboardFromStorage();
+  }
+
+  function ensurePlayerName() {
+    persistPlayerName();
+  }
+
+  function submitScoreToLeaderboard(finalScore) {
+    if (typeof finalScore !== 'number' || finalScore < 0) return;
+    persistPlayerName();
+    const playerName = (
+      (nameInputEl && nameInputEl.value.trim()) ||
+      (localStorage.getItem(PLAYER_NAME_KEY) || '').trim() ||
+      'Guest'
+    ).slice(0, 18);
+    const row = {
+      playerName,
+      score: finalScore,
+      difficulty: selectedDifficulty.id,
+      ts: Date.now(),
+    };
+    const rows = loadLeaderboardFromStorage();
+    rows.push(row);
+    rows.sort(function (a, b) {
+      return b.score - a.score || (b.ts || 0) - (a.ts || 0);
+    });
+    saveLeaderboardToStorage(rows);
+    leaderboardRows = rows.slice(0, LEADERBOARD_MAX);
+  }
+
+  function syncStartScreenUi() {
+    const wrap = document.getElementById('wrap');
+    if (!wrap) return;
+    wrap.classList.toggle('start-screen', screen === Screen.START);
+    const nameRow = wrap.querySelector('.name-row');
+    if (nameRow) nameRow.setAttribute('aria-hidden', screen === Screen.START ? 'false' : 'true');
+  }
 
   /** Photos in the gap — hug top or bottom so the middle stays fly-line clear */
   const GAP_DECAL_PATHS = [
@@ -932,9 +1076,9 @@
 
     ctx.fillStyle = 'rgba(255,255,255,0.85)';
     ctx.font = '16px Segoe UI, sans-serif';
-    ctx.fillText('Choose difficulty', W / 2, 165);
+    ctx.fillText('Choose difficulty', W / 2, 188);
 
-    const btnY = 210;
+    const btnY = 232;
     const btnH = 44;
     const btnW = 200;
     const gap = 12;
@@ -957,28 +1101,31 @@
 
     ctx.fillStyle = 'rgba(200, 235, 255, 0.9)';
     ctx.font = '15px Segoe UI, sans-serif';
-    ctx.fillText('Press Space or Tap to Start', W / 2, H - 168);
+    if (!hasPlayerNameForStart()) {
+      ctx.fillStyle = 'rgba(255, 183, 177, 0.95)';
+      ctx.font = '13px Segoe UI, sans-serif';
+      ctx.fillText('Enter your name above, then tap here or press Space', W / 2, H - 188);
+    } else {
+      ctx.fillStyle = 'rgba(200, 235, 255, 0.9)';
+      ctx.font = '15px Segoe UI, sans-serif';
+      ctx.fillText('Press Space or Tap to Start', W / 2, H - 188);
+    }
 
     ctx.font = '13px Segoe UI, sans-serif';
     ctx.fillStyle = 'rgba(180, 220, 240, 0.7)';
-    ctx.fillText('Flap with Space • Click • Tap', W / 2, H - 140);
+    ctx.fillText('Flap with Space • Click • Tap', W / 2, H - 158);
 
-    const lbY0 = H - 128;
+    const lbY0 = H - 132;
     ctx.textAlign = 'left';
     ctx.font = 'bold 11px Segoe UI, sans-serif';
     ctx.fillStyle = 'rgba(255, 224, 130, 0.95)';
     ctx.fillText('LEADERBOARD', 24, lbY0);
     ctx.font = '10px Segoe UI, sans-serif';
     ctx.fillStyle = 'rgba(200, 230, 255, 0.85)';
-    if (leaderboardStatus === 'loading' && leaderboardRows.length === 0) {
-      ctx.fillText('Loading…', 24, lbY0 + 16);
-    } else if (leaderboardStatus === 'error' && leaderboardRows.length === 0) {
-      ctx.fillStyle = 'rgba(255, 180, 180, 0.85)';
-      ctx.fillText('Run: npm start  (then open via server)', 24, lbY0 + 16);
-    } else if (!leaderboardRows.length) {
+    if (!leaderboardRows.length) {
       ctx.fillText('No scores yet — be the first.', 24, lbY0 + 16);
     } else {
-      leaderboardRows.forEach(function (row, i) {
+      leaderboardRows.slice(0, 6).forEach(function (row, i) {
         const line =
           String(i + 1) +
           '. ' +
@@ -993,12 +1140,13 @@
       });
     }
 
-    const pname = localStorage.getItem(PLAYER_NAME_KEY);
+    const pname = (nameInputEl && nameInputEl.value.trim()) ||
+      (localStorage.getItem(PLAYER_NAME_KEY) || '').trim();
     if (pname) {
       ctx.textAlign = 'center';
       ctx.font = '11px Segoe UI, sans-serif';
       ctx.fillStyle = 'rgba(180, 220, 240, 0.65)';
-      ctx.fillText('Playing as: ' + pname, W / 2, H - 22);
+      ctx.fillText('Playing as: ' + pname.slice(0, 18), W / 2, H - 22);
     }
 
     ctx.restore();
@@ -1010,8 +1158,8 @@
     ctx.fillStyle = 'rgba(0, 15, 30, 0.72)';
     ctx.fillRect(0, 0, W, H);
 
-    const boxW = 320;
-    const boxH = 300;
+    const boxW = 336;
+    const boxH = 468;
     const bx = (W - boxW) / 2;
     const by = (H - boxH) / 2;
 
@@ -1024,27 +1172,59 @@
     ctx.stroke();
 
     ctx.fillStyle = '#c62828';
-    ctx.font = 'bold 32px Segoe UI, sans-serif';
+    ctx.font = 'bold 28px Segoe UI, sans-serif';
     ctx.textAlign = 'center';
-    ctx.fillText('Game Over', W / 2, by + 52);
+    ctx.fillText('Game Over', W / 2, by + 44);
 
     ctx.fillStyle = '#333';
-    ctx.font = '20px Segoe UI, sans-serif';
-    ctx.fillText('Score: ' + score, W / 2, by + 100);
-    ctx.fillText('High: ' + highScore, W / 2, by + 130);
+    ctx.font = '18px Segoe UI, sans-serif';
+    ctx.fillText('Score: ' + score + '  •  ' + selectedDifficulty.label, W / 2, by + 78);
+    ctx.font = '15px Segoe UI, sans-serif';
+    ctx.fillStyle = '#555';
+    ctx.fillText('Best personal: ' + highScore, W / 2, by + 102);
 
     ctx.fillStyle = '#5d4037';
-    ctx.font = 'italic 14px Segoe UI, sans-serif';
-    const groLines = wrapText(gameOverRoast, boxW - 40);
+    ctx.font = 'italic 12px Segoe UI, sans-serif';
+    const groLines = wrapText(gameOverRoast, boxW - 36).slice(0, 2);
     groLines.forEach((line, i) => {
-      ctx.fillText(line, W / 2, by + 170 + i * 18);
+      ctx.fillText(line, W / 2, by + 128 + i * 15);
     });
 
+    ctx.textAlign = 'left';
+    ctx.font = 'bold 11px Segoe UI, sans-serif';
+    ctx.fillStyle = '#6a1b9a';
+    ctx.fillText('TOP SCORES (this device)', bx + 18, by + 168);
+    ctx.font = '10px Segoe UI, monospace';
+    let ly = by + 186;
+    const topRows = leaderboardRows.slice(0, 8);
+    if (!topRows.length) {
+      ctx.fillStyle = '#757575';
+      ctx.fillText('No entries yet.', bx + 18, ly);
+    } else {
+      topRows.forEach(function (row, i) {
+        const nameShort =
+          row.playerName.length > 12 ? row.playerName.slice(0, 10) + '…' : row.playerName;
+        const line =
+          String(i + 1) +
+          '. ' +
+          nameShort +
+          '  ' +
+          row.score +
+          '  ' +
+          diffShort(row.difficulty);
+        ctx.fillStyle = i < 3 ? '#f57f17' : '#37474f';
+        ctx.fillText(line, bx + 18, ly);
+        ly += 14;
+      });
+    }
+
+    ctx.textAlign = 'center';
+
     // Restart button
-    const rW = 220;
-    const rH = 42;
+    const rW = 224;
+    const rH = 40;
     const rx = W / 2 - rW / 2;
-    const ry = by + boxH - 95;
+    const ry = by + boxH - 86;
     ctx.fillStyle = '#00897b';
     ctx.strokeStyle = '#004d40';
     ctx.lineWidth = 2;
@@ -1054,18 +1234,18 @@
     ctx.stroke();
     ctx.fillStyle = '#fff';
     ctx.font = 'bold 17px Segoe UI, sans-serif';
-    ctx.fillText('Play Again', W / 2, ry + 28);
+    ctx.fillText('Play Again', W / 2, ry + 27);
 
     // Menu link
     ctx.fillStyle = '#1565c0';
     ctx.font = '14px Segoe UI, sans-serif';
-    ctx.fillText('Change difficulty', W / 2, by + boxH - 38);
+    ctx.fillText('Change difficulty / name', W / 2, by + boxH - 36);
 
     ctx.restore();
   }
 
   function hitTestStartButtons(mx, my) {
-    const btnY = 210;
+    const btnY = 232;
     const btnH = 44;
     const btnW = 200;
     const gap = 12;
@@ -1081,18 +1261,18 @@
   }
 
   function hitTestGameOver(mx, my) {
-    const boxW = 320;
-    const boxH = 300;
+    const boxW = 336;
+    const boxH = 468;
     const bx = (W - boxW) / 2;
     const by = (H - boxH) / 2;
-    const rW = 220;
-    const rH = 42;
+    const rW = 224;
+    const rH = 40;
     const rx = W / 2 - rW / 2;
-    const ry = by + boxH - 95;
-    const menuY = by + boxH - 50;
+    const ry = by + boxH - 86;
+    const menuY = by + boxH - 36;
 
     if (mx >= rx && mx <= rx + rW && my >= ry && my <= ry + rH) return 'restart';
-    if (mx >= bx && mx <= bx + boxW && my >= menuY - 20 && my <= menuY + 10) return 'menu';
+    if (mx >= bx && mx <= bx + boxW && my >= menuY - 18 && my <= menuY + 10) return 'menu';
     return null;
   }
 
@@ -1114,6 +1294,11 @@
       const d = hitTestStartButtons(x, y);
       if (d) selectedDifficulty = d;
       else {
+        if (!hasPlayerNameForStart()) {
+          if (nameInputEl) nameInputEl.focus();
+          return;
+        }
+        persistPlayerName();
         resetGameForPlay();
         screen = Screen.PLAY;
         playerVy = FLAP_IMPULSE * 0.5;
@@ -1131,7 +1316,7 @@
       } else if (hit === 'menu') {
         screen = Screen.START;
         inputLocked = false;
-        fetchLeaderboard(true);
+        fetchLeaderboard();
       }
       return;
     }
@@ -1148,6 +1333,12 @@
     audio.resume();
 
     if (screen === Screen.START) {
+      if (nameInputEl && document.activeElement === nameInputEl) return;
+      if (!hasPlayerNameForStart()) {
+        nameInputEl && nameInputEl.focus();
+        return;
+      }
+      persistPlayerName();
       resetGameForPlay();
       screen = Screen.PLAY;
       playerVy = FLAP_IMPULSE * 0.5;
@@ -1181,6 +1372,8 @@
     const dt = Math.min(0.033, (now - lastT) / 1000);
     lastT = now;
 
+    syncStartScreenUi();
+
     if (screen === Screen.START) {
       drawStartScreen(dt, now);
       requestAnimationFrame(frame);
@@ -1206,10 +1399,18 @@
     requestAnimationFrame(frame);
   }
 
+  nameInputEl = document.getElementById('playerName');
+  if (nameInputEl) {
+    const saved = localStorage.getItem(PLAYER_NAME_KEY);
+    if (saved) nameInputEl.value = saved;
+    nameInputEl.addEventListener('blur', persistPlayerName);
+    nameInputEl.addEventListener('change', persistPlayerName);
+  }
+
   resize();
   window.addEventListener('resize', resize);
   initDecor();
-  fetchLeaderboard(true);
+  fetchLeaderboard();
   requestAnimationFrame(frame);
 })();
   </script>
